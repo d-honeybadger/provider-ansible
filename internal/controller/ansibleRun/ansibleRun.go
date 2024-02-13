@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -87,7 +86,7 @@ type ansibleRunner interface {
 	GetAnsibleRunPolicy() *ansible.RunPolicy
 	WriteExtraVar(extraVar map[string]interface{}) error
 	EnableCheckMode(checkMode bool)
-	Run() (*exec.Cmd, io.Reader, error)
+	Run(ctx context.Context) (io.Reader, error)
 }
 
 // Setup adds a controller that reconciles AnsibleRun managed resources.
@@ -353,11 +352,8 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 			return managed.ExternalObservation{}, err
 		}
 		c.runner.EnableCheckMode(true)
-		dc, stdoutBuf, err := c.runner.Run()
+		stdoutBuf, err := c.runner.Run(ctx)
 		if err != nil {
-			return managed.ExternalObservation{}, err
-		}
-		if err = dc.Wait(); err != nil {
 			return managed.ExternalObservation{}, err
 		}
 		res, err := results.ParseJSONResultsStream(stdoutBuf)
@@ -395,7 +391,7 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 
 	// disable checkMode for real action
 	c.runner.EnableCheckMode(false)
-	if err := c.runAnsible(cr); err != nil {
+	if err := c.runAnsible(ctx, cr); err != nil {
 		return managed.ExternalUpdate{}, fmt.Errorf("running ansible: %w", err)
 	}
 
@@ -403,7 +399,7 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 	return managed.ExternalUpdate{ConnectionDetails: nil}, nil
 }
 
-func (c *external) Delete(_ context.Context, mg resource.Managed) error {
+func (c *external) Delete(ctx context.Context, mg resource.Managed) error {
 	cr, ok := mg.(*v1alpha1.AnsibleRun)
 	if !ok {
 		return errors.New(errNotAnsibleRun)
@@ -418,11 +414,8 @@ func (c *external) Delete(_ context.Context, mg resource.Managed) error {
 	if err := c.runner.WriteExtraVar(nestedMap); err != nil {
 		return err
 	}
-	dc, _, err := c.runner.Run()
+	_, err := c.runner.Run(ctx)
 	if err != nil {
-		return err
-	}
-	if err = dc.Wait(); err != nil {
 		return err
 	}
 	return nil
@@ -472,7 +465,7 @@ func (c *external) handleLastApplied(ctx context.Context, lastParameters *v1alph
 		return managed.ExternalObservation{}, err
 	}
 
-	if err := c.runAnsible(desired); err != nil {
+	if err := c.runAnsible(ctx, desired); err != nil {
 		return managed.ExternalObservation{}, fmt.Errorf("running ansible: %w", err)
 	}
 
@@ -483,13 +476,9 @@ func (c *external) handleLastApplied(ctx context.Context, lastParameters *v1alph
 	return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}, nil
 }
 
-func (c *external) runAnsible(cr *v1alpha1.AnsibleRun) error {
-	dc, _, err := c.runner.Run()
+func (c *external) runAnsible(ctx context.Context, cr *v1alpha1.AnsibleRun) error {
+	_, err := c.runner.Run(ctx)
 	if err != nil {
-		return err
-	}
-
-	if err = dc.Wait(); err != nil {
 		cond := xpv1.Unavailable()
 		cond.Message = err.Error()
 		cr.SetConditions(cond)
